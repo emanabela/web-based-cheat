@@ -544,11 +544,12 @@ document.getElementById('btn-create').addEventListener('click', async () => {
 
 document.getElementById('btn-join').addEventListener('click', async () => {
   const name = document.getElementById('input-name').value.trim();
-  const roomCode = document.getElementById('input-room').value.trim().toUpperCase();
+  const roomCode = document.getElementById('input-room').value.trim();
   if (!name) { showToast('Enter your name first'); return; }
   if (!roomCode) { showToast('Enter a room code'); return; }
 
-  const fullRoomId = 'cheat-' + roomCode;
+  // Accept full peer IDs (UUID) or short 5-char codes (prepend 'cheat-')
+  const fullRoomId = roomCode.includes('-') ? roomCode : 'cheat-' + roomCode.toUpperCase();
   state.myName = name;
   state.isHost = false;
   state.roomCode = fullRoomId;
