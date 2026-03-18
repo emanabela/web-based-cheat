@@ -11,34 +11,46 @@
 
   <!-- LOBBY SCREEN -->
   <div id="screen-lobby" class="screen active">
-    <h1>Cheat</h1>
+    <div class="lobby-suits" aria-hidden="true">
+      <span class="suit-deco black">♠</span>
+      <span class="suit-deco red">♥</span>
+      <span class="suit-deco red">♦</span>
+      <span class="suit-deco black">♣</span>
+    </div>
+    <h1>CHEAT</h1>
     <p class="subtitle">The card game of bluffing</p>
 
     <div class="card-box">
       <label for="input-name">Your name</label>
-      <input id="input-name" type="text" placeholder="Enter your name" maxlength="16">
+      <input id="input-name" type="text" placeholder="Enter your name" maxlength="16" autocomplete="off">
 
       <div class="divider"></div>
 
       <button id="btn-create">Create Room</button>
 
-      <div class="divider-text">or</div>
+      <div class="divider-text">or join existing</div>
 
       <label for="input-room">Room code</label>
-      <input id="input-room" type="text" placeholder="Enter room code" maxlength="36">
+      <input id="input-room" type="text" placeholder="Enter room code" maxlength="36" autocomplete="off" spellcheck="false">
       <button id="btn-join">Join Room</button>
     </div>
   </div>
 
   <!-- WAITING ROOM SCREEN -->
   <div id="screen-waiting" class="screen">
+    <div class="lobby-suits" aria-hidden="true">
+      <span class="suit-deco black">♠</span>
+      <span class="suit-deco red">♥</span>
+      <span class="suit-deco red">♦</span>
+      <span class="suit-deco black">♣</span>
+    </div>
     <h1>Waiting Room</h1>
     <div class="card-box">
-      <p>Share this code with other players:</p>
+      <p class="room-share-label">Share this code with other players:</p>
       <div id="room-code-display" class="room-code"></div>
       <button id="btn-copy">Copy Code</button>
       <div class="divider"></div>
-      <p>Players (<span id="player-count">1</span>):</p>
+      <p class="players-heading">Players <span class="badge" id="player-count">1</span></p>
       <ul id="player-list"></ul>
       <button id="btn-start" disabled>Start Game (need 2+)</button>
     </div>
@@ -46,35 +58,56 @@
 
   <!-- GAME SCREEN -->
   <div id="screen-game" class="screen">
+
+    <!-- Top bar -->
     <div id="game-header">
       <div id="turn-info">
         <span id="current-player-label">—</span>'s turn
       </div>
-      <div id="rank-info">Play: <strong id="current-rank-label">—</strong></div>
-      <div id="pile-info">Pile: <strong id="pile-count">0</strong> cards</div>
+      <div id="rank-info">
+        Play <span id="current-rank-label">—</span>s
+      </div>
     </div>
 
-    <div id="game-log-wrap">
-      <div id="game-log"></div>
+    <!-- Opponent badges -->
+    <div id="opponents-area"></div>
+
+    <!-- Table -->
+    <div id="table-area">
+      <!-- Center pile -->
+      <div id="pile-area">
+        <div id="pile-visual"></div>
+        <div id="pile-label"><span id="pile-count">0</span> cards</div>
+      </div>
+      <!-- Game log -->
+      <div id="game-log-wrap">
+        <div id="game-log"></div>
+      </div>
     </div>
 
+    <!-- Call Cheat -->
     <div id="action-area">
-      <button id="btn-cheat" class="btn-danger">Call Cheat!</button>
+      <button id="btn-cheat" class="btn-danger" disabled>Call Cheat!</button>
     </div>
 
+    <!-- Hand -->
     <div id="hand-area">
-      <p id="hand-label">Your hand (<span id="hand-count">0</span> cards):</p>
+      <div id="hand-label-row">
+        <span>Your hand (<span id="hand-count">0</span>)</span>
+        <span id="selected-info">Select cards to play</span>
+      </div>
       <div id="hand-cards"></div>
       <div id="play-controls">
         <button id="btn-play" disabled>Play Selected</button>
-        <span id="selected-info">Select cards to play</span>
       </div>
     </div>
+
   </div>
 
   <!-- END SCREEN -->
   <div id="screen-end" class="screen">
     <div class="card-box center">
+      <div class="end-suits" aria-hidden="true">♠ ♥ ♦ ♣</div>
       <h1 id="end-title">Game Over</h1>
       <p id="end-message"></p>
       <button id="btn-restart">Back to Lobby</button>

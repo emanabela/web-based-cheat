@@ -64,6 +64,7 @@ const state = {
   // Game state (host is authoritative)
   started: false,
   hands: {},         // peerId -> [card, ...]
+  handSizes: {},     // peerId -> number (opponents' hand sizes)
   pile: [],          // all cards played so far (face-down)
   pileHistory: [],   // [{ peerId, claimedRank, cards[] }] per turn played
   currentTurnIndex: 0,
@@ -104,27 +105,82 @@ function log(msg, highlight = false) {
 // ─────────────────────────────────────────────
 //  RENDER HAND
 // ─────────────────────────────────────────────
+function makeCardEl(card, selected, clickable) {
+  const isRed = RED_SUITS.has(card.suit);
+  const el = document.createElement('div');
+  el.className = 'playing-card' +
+    (isRed ? ' red' : '') +
+    (selected ? ' selected' : '') +
+    (clickable ? '' : ' no-action');
+  el.innerHTML =
+    `<div class="card-corner tl"><span class="cr">${card.rank}</span><span class="cs">${card.suit}</span></div>` +
+    `<div class="card-center">${card.suit}</div>` +
+    `<div class="card-corner br"><span class="cr">${card.rank}</span><span class="cs">${card.suit}</span></div>`;
+  return el;
+}
+
 function renderHand() {
   const hand = sortHand(state.hands[state.myId] || []);
   const container = document.getElementById('hand-cards');
   container.innerHTML = '';
+  const myTurn = isMyTurn();
 
   hand.forEach(card => {
-    const chip = document.createElement('div');
-    chip.className = 'card-chip' + (RED_SUITS.has(card.suit) ? ' red' : '');
-    chip.textContent = cardLabel(card);
-
     const isSelected = state.selectedCards.some(
       c => c.rank === card.rank && c.suit === card.suit
     );
-    if (isSelected) chip.classList.add('selected');
-
-    chip.addEventListener('click', () => toggleCardSelection(card));
-    container.appendChild(chip);
+    const el = makeCardEl(card, isSelected, myTurn);
+    el.addEventListener('click', () => toggleCardSelection(card));
+    container.appendChild(el);
   });
 
   document.getElementById('hand-count').textContent = hand.length;
   updatePlayButton();
+}
+
+function renderPile() {
+  const visual = document.getElementById('pile-visual');
+  visual.innerHTML = '';
+  const count = state.pile.length;
+  document.getElementById('pile-count').textContent = count;
+
+  const displayCount = Math.min(count, 6);
+  for (let i = 0; i < displayCount; i++) {
+    const c = document.createElement('div');
+    c.className = 'pile-card';
+    const frac = displayCount <= 1 ? 0 : i / (displayCount - 1);
+    const angle = (frac - 0.5) * 18;
+    const xOff  = (frac - 0.5) * 10;
+    const yOff  = i * 1.5;
+    c.style.transform = `translate(${xOff}px, ${yOff}px) rotate(${angle}deg)`;
+    c.style.zIndex = i;
+    visual.appendChild(c);
+  }
+}
+
+function renderOpponents() {
+  const area = document.getElementById('opponents-area');
+  area.innerHTML = '';
+  const currentId = state.players[state.currentTurnIndex]?.id;
+
+  state.players
+    .filter(p => p.id !== state.myId)
+    .forEach(p => {
+      const badge = document.createElement('div');
+      badge.className = 'opp-badge' + (p.id === currentId ? ' active-turn' : '');
+
+      const count = (state.isHost
+        ? (state.hands[p.id]?.length ?? 0)
+        : (state.handSizes[p.id] ?? '?'));
+
+      badge.innerHTML =
+        `<div class="opp-name">${p.name}</div>` +
+        `<div class="opp-cards-wrap">` +
+          `<span class="opp-card-icon"></span>` +
+          `<span class="opp-count">${count}</span>` +
+        `</div>`;
+      area.appendChild(badge);
+    });
 }
 
 function toggleCardSelection(card) {
@@ -160,11 +216,13 @@ function renderHeader() {
   document.getElementById('current-player-label').textContent =
     currentPlayer?.id === state.myId ? 'Your' : (currentPlayer?.name || '—');
   document.getElementById('current-rank-label').textContent = state.currentRank;
-  document.getElementById('pile-count').textContent = state.pile.length;
 
   // Cheat button: enabled only when pile has cards and it's not your turn
   const pileHasCards = state.pile.length > 0;
   document.getElementById('btn-cheat').disabled = !pileHasCards || isMyTurn();
+
+  renderPile();
+  renderOpponents();
 }
 
 // ─────────────────────────────────────────────
@@ -338,6 +396,7 @@ function hostHandleCheat({ callerPeerId }) {
 function applyGameStart(msg) {
   state.players = msg.players;
   state.hands[state.myId] = msg.hand;
+  state.handSizes = {};
   state.currentTurnIndex = msg.currentTurnIndex;
   state.currentRank = msg.currentRank;
   state.pile = [];
@@ -354,6 +413,7 @@ function applyGameStart(msg) {
 
 function applyGameUpdate(msg) {
   state.hands[state.myId] = msg.hand;
+  if (msg.handSizes) state.handSizes = msg.handSizes;
   state.currentTurnIndex = msg.currentTurnIndex;
   state.currentRank = msg.currentRank;
   state.pile = new Array(msg.pileSize); // we only track size client-side
@@ -370,6 +430,7 @@ function applyGameUpdate(msg) {
 
 function applyCheatResult(msg) {
   state.hands[state.myId] = msg.hand;
+  if (msg.handSizes) state.handSizes = msg.handSizes;
   state.currentTurnIndex = msg.currentTurnIndex;
   state.currentRank = msg.currentRank;
   state.pile = new Array(msg.pileSize);
