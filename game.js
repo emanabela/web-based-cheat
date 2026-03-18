@@ -1,6 +1,13 @@
 // ─────────────────────────────────────────────
 //  CONSTANTS & HELPERS
 // ─────────────────────────────────────────────
+const ROOM_CODE_CHARS = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+function makeRoomCode() {
+  return Array.from({ length: 5 }, () =>
+    ROOM_CODE_CHARS[Math.floor(Math.random() * ROOM_CODE_CHARS.length)]
+  ).join('');
+}
+
 const SUITS = ['♠', '♥', '♦', '♣'];
 const RANKS = ['A', '2', '3', '4', '5', '6', '7', '8', '9', '10', 'J', 'Q', 'K'];
 const RED_SUITS = new Set(['♥', '♦']);
@@ -508,7 +515,8 @@ document.getElementById('btn-create').addEventListener('click', async () => {
   state.isHost = true;
 
   try {
-    const { p, peerId } = await createPeer();
+    const roomCode = makeRoomCode();
+    const { p, peerId } = await createPeer(roomCode);
     peer = p;
     state.myId = peerId;
     state.roomCode = peerId;
