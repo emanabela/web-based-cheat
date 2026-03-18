@@ -559,10 +559,27 @@ document.getElementById('btn-join').addEventListener('click', async () => {
     peer = p;
     state.myId = peerId;
 
+    // Catch peer-level errors (e.g. peer-unavailable) that fire after open
+    peer.on('error', err => {
+      if (err.type === 'peer-unavailable') {
+        showToast('Room not found. Check the code and try again.');
+      } else {
+        showToast('Error: ' + (err.message || err.type));
+      }
+    });
+
     const conn = peer.connect(fullRoomId, { reliable: true });
     hostConn = conn;
 
+    // Timeout if connection never opens
+    const connTimeout = setTimeout(() => {
+      if (!state.started && !state.players.length > 1) {
+        showToast('Could not connect. Check the room code.');
+      }
+    }, 8000);
+
     conn.on('open', () => {
+      clearTimeout(connTimeout);
       conn.send({ type: 'join', name, peerId });
       setupGuestHandlers(conn);
 
