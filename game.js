@@ -400,9 +400,17 @@ function endGame(winnerPeerId) {
 // ─────────────────────────────────────────────
 function createPeer(id) {
   return new Promise((resolve, reject) => {
-    const p = id ? new Peer(id) : new Peer();
+    const p = new Peer(id);
     p.on('open', peerId => resolve({ p, peerId }));
-    p.on('error', reject);
+    p.on('error', err => {
+      if (err.type === 'unavailable-id') {
+        // ID taken — retry with a new code
+        p.destroy();
+        createPeer('cheat-' + makeRoomCode()).then(resolve).catch(reject);
+      } else {
+        reject(err);
+      }
+    });
   });
 }
 
@@ -515,16 +523,18 @@ document.getElementById('btn-create').addEventListener('click', async () => {
   state.isHost = true;
 
   try {
-    const roomCode = makeRoomCode();
-    const { p, peerId } = await createPeer(roomCode);
+    const shortCode = makeRoomCode();
+    const { p, peerId } = await createPeer('cheat-' + shortCode);
     peer = p;
     state.myId = peerId;
     state.roomCode = peerId;
+    // Display only the short code portion (after 'cheat-')
+    const displayCode = peerId.startsWith('cheat-') ? peerId.slice(6) : peerId;
     state.players = [{ id: peerId, name }];
 
     setupHostHandlers();
 
-    document.getElementById('room-code-display').textContent = peerId;
+    document.getElementById('room-code-display').textContent = displayCode;
     renderPlayerList();
     showScreen('screen-waiting');
   } catch (e) {
@@ -534,20 +544,21 @@ document.getElementById('btn-create').addEventListener('click', async () => {
 
 document.getElementById('btn-join').addEventListener('click', async () => {
   const name = document.getElementById('input-name').value.trim();
-  const roomCode = document.getElementById('input-room').value.trim();
+  const roomCode = document.getElementById('input-room').value.trim().toUpperCase();
   if (!name) { showToast('Enter your name first'); return; }
   if (!roomCode) { showToast('Enter a room code'); return; }
 
+  const fullRoomId = 'cheat-' + roomCode;
   state.myName = name;
   state.isHost = false;
-  state.roomCode = roomCode;
+  state.roomCode = fullRoomId;
 
   try {
-    const { p, peerId } = await createPeer();
+    const { p, peerId } = await createPeer('guest-' + makeRoomCode());
     peer = p;
     state.myId = peerId;
 
-    const conn = peer.connect(roomCode, { reliable: true });
+    const conn = peer.connect(fullRoomId, { reliable: true });
     hostConn = conn;
 
     conn.on('open', () => {
