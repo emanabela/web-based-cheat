@@ -68,7 +68,8 @@ const state = {
   pile: [],          // all cards played so far (face-down)
   pileHistory: [],   // [{ peerId, claimedRank, cards[] }] per turn played
   currentTurnIndex: 0,
-  currentRank: 'A',
+  currentRank: '7',
+  lastPlayerId: null, // who played last (cheat is allowed for everyone else)
 
   selectedCards: [],
 };
@@ -217,9 +218,9 @@ function renderHeader() {
     currentPlayer?.id === state.myId ? 'Your' : (currentPlayer?.name || '—');
   document.getElementById('current-rank-label').textContent = state.currentRank;
 
-  // Cheat button: enabled only when pile has cards and it's not your turn
+  // Cheat button: enabled when pile has cards and you weren't the last to play
   const pileHasCards = state.pile.length > 0;
-  document.getElementById('btn-cheat').disabled = !pileHasCards || isMyTurn();
+  document.getElementById('btn-cheat').disabled = !pileHasCards || state.lastPlayerId === state.myId;
 
   renderPile();
   renderOpponents();
@@ -267,9 +268,17 @@ function hostStartGame() {
   state.players.forEach((p, i) => { state.hands[p.id] = hands[i]; });
   state.pile = [];
   state.pileHistory = [];
-  state.currentTurnIndex = 0;
-  state.currentRank = 'A';
+  state.currentRank = '7';
+  state.lastPlayerId = null;
   state.started = true;
+
+  // Player who holds 7♦ goes first
+  const starterIdx = state.players.findIndex(p =>
+    state.hands[p.id].some(c => c.rank === '7' && c.suit === '♦')
+  );
+  state.currentTurnIndex = starterIdx >= 0 ? starterIdx : 0;
+
+  const starterName = state.players[state.currentTurnIndex]?.name || 'Someone';
 
   // Send each player their own hand + shared state
   state.players.forEach(p => {
@@ -280,6 +289,7 @@ function hostStartGame() {
       currentTurnIndex: state.currentTurnIndex,
       currentRank: state.currentRank,
       pileSize: state.pile.length,
+      starterName,
     };
     if (p.id === state.myId) {
       applyGameStart(msg);
@@ -304,6 +314,7 @@ function hostHandlePlay({ peerId, cards, claimedRank }) {
   // Add to pile
   state.pile.push(...cards);
   state.pileHistory.push({ peerId, claimedRank, cards });
+  state.lastPlayerId = peerId;
 
   // Advance turn
   state.currentTurnIndex = (state.currentTurnIndex + 1) % state.players.length;
@@ -321,6 +332,7 @@ function hostHandlePlay({ peerId, cards, claimedRank }) {
     currentRank: state.currentRank,
     pileSize: state.pile.length,
     logMsg,
+    lastPlayerId: state.lastPlayerId,
     handSizes: Object.fromEntries(state.players.map(p => [p.id, state.hands[p.id].length])),
     winner: winner ? winner.id : null,
   };
@@ -361,15 +373,10 @@ function hostHandleCheat({ callerPeerId }) {
   state.hands[loserPeerId].push(...state.pile);
   state.pile = [];
   state.pileHistory = [];
+  state.lastPlayerId = null; // pile is now empty; anyone can call cheat once loser plays
 
   // Turn goes to the loser (they play next)
   state.currentTurnIndex = state.players.findIndex(p => p.id === loserPeerId);
-  state.currentRank = nextRank(
-    RANKS[(RANKS.indexOf(state.currentRank) - 1 + RANKS.length) % RANKS.length]
-  );
-  // Actually: after cheat call, rank resets — loser starts fresh with any rank
-  // Convention: loser can play any rank, so we just advance normally from current
-  state.currentRank = state.currentRank; // keep rank as-is, loser's turn picks up
 
   const winner = state.players.find(p => state.hands[p.id].length === 0);
 
@@ -382,6 +389,7 @@ function hostHandleCheat({ callerPeerId }) {
       currentRank: state.currentRank,
       pileSize: state.pile.length,
       hand: state.hands[p.id],
+      lastPlayerId: state.lastPlayerId,
       handSizes: Object.fromEntries(state.players.map(pl => [pl.id, state.hands[pl.id].length])),
       winner: winner ? winner.id : null,
     };
@@ -397,6 +405,7 @@ function applyGameStart(msg) {
   state.players = msg.players;
   state.hands[state.myId] = msg.hand;
   state.handSizes = {};
+  state.lastPlayerId = null;
   state.currentTurnIndex = msg.currentTurnIndex;
   state.currentRank = msg.currentRank;
   state.pile = [];
@@ -405,7 +414,10 @@ function applyGameStart(msg) {
   state.started = true;
 
   document.getElementById('game-log').innerHTML = '';
-  log('Game started! First rank: ' + state.currentRank);
+  const starterLabel = msg.starterName
+    ? `${msg.starterName} has the 7♦ and goes first`
+    : 'Game started';
+  log(`${starterLabel}. First rank: ${state.currentRank}`);
   showScreen('screen-game');
   renderHand();
   renderHeader();
@@ -414,6 +426,7 @@ function applyGameStart(msg) {
 function applyGameUpdate(msg) {
   state.hands[state.myId] = msg.hand;
   if (msg.handSizes) state.handSizes = msg.handSizes;
+  if ('lastPlayerId' in msg) state.lastPlayerId = msg.lastPlayerId;
   state.currentTurnIndex = msg.currentTurnIndex;
   state.currentRank = msg.currentRank;
   state.pile = new Array(msg.pileSize); // we only track size client-side
@@ -431,6 +444,7 @@ function applyGameUpdate(msg) {
 function applyCheatResult(msg) {
   state.hands[state.myId] = msg.hand;
   if (msg.handSizes) state.handSizes = msg.handSizes;
+  if ('lastPlayerId' in msg) state.lastPlayerId = msg.lastPlayerId;
   state.currentTurnIndex = msg.currentTurnIndex;
   state.currentRank = msg.currentRank;
   state.pile = new Array(msg.pileSize);
