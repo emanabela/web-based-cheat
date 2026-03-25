@@ -38,6 +38,15 @@ function nextRank(rank) {
   return RANKS[(RANKS.indexOf(rank) + 1) % RANKS.length];
 }
 
+function prevRank(rank) {
+  return RANKS[(RANKS.indexOf(rank) - 1 + RANKS.length) % RANKS.length];
+}
+
+function getValidRanks(rank) {
+  if (rank === null) return [...RANKS]; // free choice after cheat
+  return [prevRank(rank), rank, nextRank(rank)];
+}
+
 function cardLabel(card) {
   return `${card.rank}${card.suit}`;
 }
@@ -72,6 +81,9 @@ const state = {
   lastPlayerId: null, // who played last (cheat is allowed for everyone else)
 
   selectedCards: [],
+  chosenRank: null, // rank the player picks to claim (same, +1, or -1)
+  pendingWinner: null, // peerId of player who emptied hand, awaiting cheat window
+  winCountdown: 0, // seconds remaining in cheat window
 };
 
 let peer = null;
@@ -200,9 +212,49 @@ function toggleCardSelection(card) {
 function updatePlayButton() {
   const myTurn = isMyTurn();
   const hasSelected = state.selectedCards.length > 0;
-  document.getElementById('btn-play').disabled = !(myTurn && hasSelected);
+  const first = isFirstPlay();
+  const hasRank = first || state.chosenRank !== null;
+  document.getElementById('btn-play').disabled = !(myTurn && hasSelected && hasRank);
   document.getElementById('selected-info').textContent =
     hasSelected ? `${state.selectedCards.length} card(s) selected` : 'Select cards to play';
+
+  // Show/hide rank picker (hidden on first play — forced to 7)
+  const picker = document.getElementById('rank-picker');
+  if (myTurn && hasSelected && !first) {
+    const valid = getValidRanks(state.currentRank);
+    const lowEl = document.getElementById('rank-low');
+    const sameEl = document.getElementById('rank-same');
+    const highEl = document.getElementById('rank-high');
+
+    if (state.currentRank === null) {
+      // Free choice: show all 13 ranks as buttons
+      picker.innerHTML = '<span class="rank-picker-label">Claim as:</span>';
+      RANKS.forEach(r => {
+        const btn = document.createElement('button');
+        btn.className = 'rank-btn' + (state.chosenRank === r ? ' active' : '');
+        btn.textContent = r;
+        btn.addEventListener('click', () => { state.chosenRank = r; renderHand(); });
+        picker.appendChild(btn);
+      });
+    } else {
+      // Normal: 3 buttons (low, same, high)
+      picker.innerHTML =
+        '<span class="rank-picker-label">Claim as:</span>' +
+        '<button class="rank-btn" id="rank-low"></button>' +
+        '<button class="rank-btn" id="rank-same"></button>' +
+        '<button class="rank-btn" id="rank-high"></button>';
+      document.getElementById('rank-low').textContent = valid[0];
+      document.getElementById('rank-same').textContent = valid[1];
+      document.getElementById('rank-high').textContent = valid[2];
+      [document.getElementById('rank-low'), document.getElementById('rank-same'), document.getElementById('rank-high')].forEach(btn => {
+        btn.classList.toggle('active', state.chosenRank === btn.textContent);
+        btn.addEventListener('click', () => { state.chosenRank = btn.textContent; renderHand(); });
+      });
+    }
+    picker.style.display = '';
+  } else {
+    picker.style.display = 'none';
+  }
 }
 
 function isMyTurn() {
@@ -216,7 +268,14 @@ function renderHeader() {
   const currentPlayer = state.players[state.currentTurnIndex];
   document.getElementById('current-player-label').textContent =
     currentPlayer?.id === state.myId ? 'Your' : (currentPlayer?.name || '—');
-  document.getElementById('current-rank-label').textContent = state.currentRank;
+  if (isFirstPlay()) {
+    document.getElementById('current-rank-label').textContent = '7 (first play)';
+  } else if (state.currentRank === null) {
+    document.getElementById('current-rank-label').textContent = 'any rank';
+  } else {
+    const valid = getValidRanks(state.currentRank);
+    document.getElementById('current-rank-label').textContent = `${valid[0]} / ${valid[1]} / ${valid[2]}`;
+  }
 
   // Cheat button: enabled when pile has cards and you weren't the last to play
   const pileHasCards = state.pile.length > 0;
@@ -280,7 +339,8 @@ function hostStartGame() {
 
   const starterName = state.players[state.currentTurnIndex]?.name || 'Someone';
 
-  // Send each player their own hand + shared state
+  // Send each player their own hand + shared state (guests first, host last)
+  let hostMsg = null;
   state.players.forEach(p => {
     const msg = {
       type: 'game-start',
@@ -292,17 +352,20 @@ function hostStartGame() {
       starterName,
     };
     if (p.id === state.myId) {
-      applyGameStart(msg);
+      hostMsg = msg;
     } else {
       sendToPlayer(p.id, msg);
     }
   });
+  if (hostMsg) applyGameStart(hostMsg);
 }
 
 function hostHandlePlay({ peerId, cards, claimedRank }) {
-  // Validate it's their turn and rank matches
+  // Validate it's their turn
   if (state.players[state.currentTurnIndex].id !== peerId) return;
-  if (claimedRank !== state.currentRank) return;
+  // First play must be 7; after cheat (null) any rank is valid; otherwise +/-1 or same
+  const validRanks = getValidRanks(state.currentRank);
+  if (!validRanks.includes(claimedRank)) return;
 
   // Remove cards from player's hand
   cards.forEach(played => {
@@ -316,15 +379,15 @@ function hostHandlePlay({ peerId, cards, claimedRank }) {
   state.pileHistory.push({ peerId, claimedRank, cards });
   state.lastPlayerId = peerId;
 
-  // Advance turn
+  // Advance turn; current rank becomes whatever was claimed
   state.currentTurnIndex = (state.currentTurnIndex + 1) % state.players.length;
-  state.currentRank = nextRank(state.currentRank);
+  state.currentRank = claimedRank;
 
   const playerName = state.players.find(p => p.id === peerId)?.name || peerId;
   const logMsg = `${playerName} played ${cards.length} card(s) as ${claimedRank}`;
 
-  // Check win
-  const winner = state.players.find(p => state.hands[p.id].length === 0);
+  // Check if someone emptied their hand
+  const potentialWinner = state.players.find(p => state.hands[p.id].length === 0);
 
   const updateMsg = {
     type: 'game-update',
@@ -334,19 +397,87 @@ function hostHandlePlay({ peerId, cards, claimedRank }) {
     logMsg,
     lastPlayerId: state.lastPlayerId,
     handSizes: Object.fromEntries(state.players.map(p => [p.id, state.hands[p.id].length])),
-    winner: winner ? winner.id : null,
+    pendingWinner: potentialWinner ? potentialWinner.id : null,
   };
 
-  // Send each player their updated hand
+  // Send each player their updated hand (guests first, host last)
+  let hostUpdateMsg = null;
   state.players.forEach(p => {
     const msg = { ...updateMsg, hand: state.hands[p.id] };
-    if (p.id === state.myId) applyGameUpdate(msg);
+    if (p.id === state.myId) hostUpdateMsg = msg;
     else sendToPlayer(p.id, msg);
   });
+  if (hostUpdateMsg) applyGameUpdate(hostUpdateMsg);
+
+  // Start 10-second cheat window if someone emptied their hand
+  if (potentialWinner) {
+    hostStartWinCountdown(potentialWinner.id);
+  }
+}
+
+let winTimer = null;
+let winTickTimer = null;
+
+function hostStartWinCountdown(winnerPeerId) {
+  state.pendingWinner = winnerPeerId;
+  let remaining = 10;
+
+  const tick = () => {
+    // Broadcast countdown to all players
+    const msg = { type: 'win-countdown', seconds: remaining, winnerId: winnerPeerId };
+    Object.values(state.connections).forEach(({ conn }) => conn.send(msg));
+    applyWinCountdown(msg);
+  };
+
+  tick(); // send immediately (10)
+  winTickTimer = setInterval(() => {
+    remaining--;
+    if (remaining <= 0) {
+      clearInterval(winTickTimer);
+      winTickTimer = null;
+      hostConfirmWin(winnerPeerId);
+    } else {
+      tick();
+    }
+  }, 1000);
+}
+
+function hostCancelWinCountdown() {
+  state.pendingWinner = null;
+  clearInterval(winTickTimer);
+  winTickTimer = null;
+  const msg = { type: 'win-cancelled' };
+  Object.values(state.connections).forEach(({ conn }) => conn.send(msg));
+  applyWinCancelled();
+}
+
+function hostConfirmWin(winnerPeerId) {
+  state.pendingWinner = null;
+  const msg = { type: 'game-over', winnerId: winnerPeerId };
+  Object.values(state.connections).forEach(({ conn }) => conn.send(msg));
+  endGame(winnerPeerId);
+}
+
+function applyWinCountdown(msg) {
+  state.pendingWinner = msg.winnerId;
+  state.winCountdown = msg.seconds;
+  const name = state.players.find(p => p.id === msg.winnerId)?.name || 'Someone';
+  document.getElementById('btn-cheat').textContent = `Call Cheat! (${msg.seconds}s)`;
+}
+
+function applyWinCancelled() {
+  state.pendingWinner = null;
+  state.winCountdown = 0;
+  document.getElementById('btn-cheat').textContent = 'Call Cheat!';
 }
 
 function hostHandleCheat({ callerPeerId }) {
   if (state.pileHistory.length === 0) return;
+
+  // Cancel pending win countdown if active
+  if (state.pendingWinner) {
+    hostCancelWinCountdown();
+  }
 
   const lastPlay = state.pileHistory[state.pileHistory.length - 1];
   const wasCheating = lastPlay.cards.some(c => c.rank !== lastPlay.claimedRank);
@@ -373,13 +504,17 @@ function hostHandleCheat({ callerPeerId }) {
   state.hands[loserPeerId].push(...state.pile);
   state.pile = [];
   state.pileHistory = [];
-  state.lastPlayerId = null; // pile is now empty; anyone can call cheat once loser plays
+  state.lastPlayerId = null;
 
-  // Turn goes to the loser (they play next)
-  state.currentTurnIndex = state.players.findIndex(p => p.id === loserPeerId);
+  // If caught cheating, caller plays next; if wrong call, the caller (loser) plays next
+  const nextPlayerId = wasCheating ? callerPeerId : loserPeerId;
+  state.currentTurnIndex = state.players.findIndex(p => p.id === nextPlayerId);
 
-  const winner = state.players.find(p => state.hands[p.id].length === 0);
+  // After a cheat call, next player can claim any rank
+  state.currentRank = null;
 
+  // Send each player the cheat result (guests first, host last)
+  let hostCheatMsg = null;
   state.players.forEach(p => {
     const msg = {
       type: 'cheat-result',
@@ -391,11 +526,11 @@ function hostHandleCheat({ callerPeerId }) {
       hand: state.hands[p.id],
       lastPlayerId: state.lastPlayerId,
       handSizes: Object.fromEntries(state.players.map(pl => [pl.id, state.hands[pl.id].length])),
-      winner: winner ? winner.id : null,
     };
-    if (p.id === state.myId) applyCheatResult(msg);
+    if (p.id === state.myId) hostCheatMsg = msg;
     else sendToPlayer(p.id, msg);
   });
+  if (hostCheatMsg) applyCheatResult(hostCheatMsg);
 }
 
 // ─────────────────────────────────────────────
@@ -411,13 +546,17 @@ function applyGameStart(msg) {
   state.pile = [];
   state.pileHistory = [];
   state.selectedCards = [];
+  state.chosenRank = null;
+  state.pendingWinner = null;
+  state.winCountdown = 0;
   state.started = true;
 
+  document.getElementById('btn-cheat').textContent = 'Call Cheat!';
   document.getElementById('game-log').innerHTML = '';
   const starterLabel = msg.starterName
     ? `${msg.starterName} has the 7♦ and goes first`
     : 'Game started';
-  log(`${starterLabel}. First rank: ${state.currentRank}`);
+  log(`${starterLabel}. First play must be 7s.`);
   showScreen('screen-game');
   renderHand();
   renderHeader();
@@ -429,16 +568,17 @@ function applyGameUpdate(msg) {
   if ('lastPlayerId' in msg) state.lastPlayerId = msg.lastPlayerId;
   state.currentTurnIndex = msg.currentTurnIndex;
   state.currentRank = msg.currentRank;
-  state.pile = new Array(msg.pileSize); // we only track size client-side
+  if (!state.isHost) state.pile = new Array(msg.pileSize); // guests only track size
   state.selectedCards = [];
+  state.chosenRank = null;
 
   log(msg.logMsg);
+  if (msg.pendingWinner) {
+    const name = state.players.find(p => p.id === msg.pendingWinner)?.name || 'Someone';
+    log(`${name} played their last card! 10s to call cheat...`, true);
+  }
   renderHand();
   renderHeader();
-
-  if (msg.winner) {
-    endGame(msg.winner);
-  }
 }
 
 function applyCheatResult(msg) {
@@ -449,16 +589,17 @@ function applyCheatResult(msg) {
   state.currentRank = msg.currentRank;
   state.pile = new Array(msg.pileSize);
   state.selectedCards = [];
+  state.chosenRank = null;
+
+  state.pendingWinner = null;
+  state.winCountdown = 0;
+  document.getElementById('btn-cheat').textContent = 'Call Cheat!';
 
   log(msg.revealMsg);
   log(msg.resultMsg, true);
   showToast(msg.resultMsg, 4000);
   renderHand();
   renderHeader();
-
-  if (msg.winner) {
-    endGame(msg.winner);
-  }
 }
 
 function endGame(winnerPeerId) {
@@ -547,6 +688,15 @@ function setupGuestHandlers(conn) {
 
     } else if (msg.type === 'cheat-result') {
       applyCheatResult(msg);
+
+    } else if (msg.type === 'win-countdown') {
+      applyWinCountdown(msg);
+
+    } else if (msg.type === 'win-cancelled') {
+      applyWinCancelled();
+
+    } else if (msg.type === 'game-over') {
+      endGame(msg.winnerId);
     }
   });
 
@@ -558,14 +708,20 @@ function setupGuestHandlers(conn) {
 // ─────────────────────────────────────────────
 //  ACTIONS
 // ─────────────────────────────────────────────
+function isFirstPlay() {
+  return state.currentRank === '7' && state.pile.length === 0;
+}
+
 function playCards() {
-  if (!isMyTurn() || state.selectedCards.length === 0) return;
+  const first = isFirstPlay();
+  const rank = first ? '7' : state.chosenRank;
+  if (!isMyTurn() || state.selectedCards.length === 0 || !rank) return;
 
   const msg = {
     type: 'play',
     peerId: state.myId,
     cards: state.selectedCards,
-    claimedRank: state.currentRank,
+    claimedRank: rank,
   };
 
   if (state.isHost) {
@@ -692,7 +848,8 @@ document.getElementById('btn-restart').addEventListener('click', () => {
     isHost: false, myId: null, myName: '', roomCode: '',
     connections: {}, players: [], started: false,
     hands: {}, pile: [], pileHistory: [],
-    currentTurnIndex: 0, currentRank: 'A', selectedCards: [],
+    currentTurnIndex: 0, currentRank: '7', selectedCards: [], chosenRank: null,
+    pendingWinner: null, winCountdown: 0,
   });
   document.getElementById('input-room').value = '';
   showScreen('screen-lobby');

@@ -430,8 +430,41 @@ button:disabled { background: #333; cursor: not-allowed; color: #666; }
 /* Play button strip */
 #play-controls {
   display: flex;
-  justify-content: center;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.4rem;
   margin-top: 0.1rem;
+}
+#rank-picker {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+}
+.rank-picker-label {
+  font-size: 0.75rem;
+  color: var(--text-dim);
+  margin-right: 0.15rem;
+}
+.rank-btn {
+  min-width: 38px;
+  padding: 0.3rem 0.5rem;
+  font-size: 0.85rem;
+  font-weight: bold;
+  border: 2px solid var(--gold-dim);
+  border-radius: 6px;
+  background: rgba(0,0,0,0.3);
+  color: var(--text);
+  cursor: pointer;
+  transition: all 0.15s;
+}
+.rank-btn:hover {
+  border-color: var(--gold);
+  background: rgba(255,255,255,0.08);
+}
+.rank-btn.active {
+  border-color: var(--gold);
+  background: var(--gold-dim);
+  color: #fff;
 }
 #btn-play {
   min-width: 140px;
