@@ -56,33 +56,89 @@ function sortHand(hand) {
 }
 
 // ─────────────────────────────────────────────
+//  SESSION PERSISTENCE
+// ─────────────────────────────────────────────
+function generatePlayerId() {
+  if (crypto.randomUUID) return crypto.randomUUID();
+  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, c => {
+    const r = Math.random() * 16 | 0;
+    return (c === 'x' ? r : (r & 0x3 | 0x8)).toString(16);
+  });
+}
+
+function saveSession() {
+  const session = {
+    playerId: state.myId,
+    name: state.myName,
+    roomCode: state.roomCode,
+    isHost: state.isHost,
+    started: state.started,
+  };
+  sessionStorage.setItem('cheat-session', JSON.stringify(session));
+
+  if (state.isHost && state.started) {
+    const hostState = {
+      players: state.players,
+      hands: state.hands,
+      pile: state.pile,
+      pileHistory: state.pileHistory,
+      currentTurnIndex: state.currentTurnIndex,
+      currentRank: state.currentRank,
+      lastPlayerId: state.lastPlayerId,
+      pendingWinner: state.pendingWinner,
+    };
+    sessionStorage.setItem('cheat-host-state', JSON.stringify(hostState));
+  }
+}
+
+function clearSession() {
+  sessionStorage.removeItem('cheat-session');
+  sessionStorage.removeItem('cheat-host-state');
+}
+
+function loadSession() {
+  try {
+    const raw = sessionStorage.getItem('cheat-session');
+    return raw ? JSON.parse(raw) : null;
+  } catch { return null; }
+}
+
+function loadHostState() {
+  try {
+    const raw = sessionStorage.getItem('cheat-host-state');
+    return raw ? JSON.parse(raw) : null;
+  } catch { return null; }
+}
+
+// ─────────────────────────────────────────────
 //  STATE
 // ─────────────────────────────────────────────
 const state = {
   isHost: false,
-  myId: null,        // PeerJS peer ID
+  myId: null,        // stable playerId (UUID, persisted in sessionStorage)
+  myPeerId: null,    // PeerJS peer ID (ephemeral, used for networking)
   myName: '',
-  roomCode: '',      // host's peer ID used as room code
+  roomCode: '',      // host's PeerJS peer ID (used as room code)
 
-  // Host-only: map of peerId -> { name, conn }
+  // Host-only: map of playerId -> { name, conn }
   connections: {},
 
-  // Ordered player list: [{ id, name }]
+  // Ordered player list: [{ id: playerId, name }]
   players: [],
 
   // Game state (host is authoritative)
   started: false,
-  hands: {},         // peerId -> [card, ...]
-  handSizes: {},     // peerId -> number (opponents' hand sizes)
+  hands: {},         // playerId -> [card, ...]
+  handSizes: {},     // playerId -> number (opponents' hand sizes)
   pile: [],          // all cards played so far (face-down)
-  pileHistory: [],   // [{ peerId, claimedRank, cards[] }] per turn played
+  pileHistory: [],   // [{ playerId, claimedRank, cards[] }] per turn played
   currentTurnIndex: 0,
   currentRank: '7',
   lastPlayerId: null, // who played last (cheat is allowed for everyone else)
 
   selectedCards: [],
   chosenRank: null, // rank the player picks to claim (same, +1, or -1)
-  pendingWinner: null, // peerId of player who emptied hand, awaiting cheat window
+  pendingWinner: null, // playerId of player who emptied hand, awaiting cheat window
   winCountdown: 0, // seconds remaining in cheat window
 };
 
@@ -222,9 +278,6 @@ function updatePlayButton() {
   const picker = document.getElementById('rank-picker');
   if (myTurn && hasSelected && !first) {
     const valid = getValidRanks(state.currentRank);
-    const lowEl = document.getElementById('rank-low');
-    const sameEl = document.getElementById('rank-same');
-    const highEl = document.getElementById('rank-high');
 
     if (state.currentRank === null) {
       // Free choice: show all 13 ranks as buttons
@@ -294,7 +347,7 @@ function renderPlayerList() {
   state.players.forEach(p => {
     const li = document.createElement('li');
     li.textContent = p.name;
-    if (p.id === state.roomCode) li.classList.add('host');
+    if (state.isHost && p.id === state.myId) li.classList.add('host');
     list.appendChild(li);
   });
   document.getElementById('player-count').textContent = state.players.length;
@@ -313,8 +366,8 @@ function sendToHost(msg) {
   hostConn?.send(msg);
 }
 
-function sendToPlayer(peerId, msg) {
-  state.connections[peerId]?.conn.send(msg);
+function sendToPlayer(playerId, msg) {
+  state.connections[playerId]?.conn.send(msg);
 }
 
 // ─────────────────────────────────────────────
@@ -358,32 +411,33 @@ function hostStartGame() {
     }
   });
   if (hostMsg) applyGameStart(hostMsg);
+  saveSession();
 }
 
-function hostHandlePlay({ peerId, cards, claimedRank }) {
+function hostHandlePlay({ playerId, cards, claimedRank }) {
   // Validate it's their turn
-  if (state.players[state.currentTurnIndex].id !== peerId) return;
+  if (state.players[state.currentTurnIndex].id !== playerId) return;
   // First play must be 7; after cheat (null) any rank is valid; otherwise +/-1 or same
   const validRanks = getValidRanks(state.currentRank);
   if (!validRanks.includes(claimedRank)) return;
 
   // Remove cards from player's hand
   cards.forEach(played => {
-    const hand = state.hands[peerId];
+    const hand = state.hands[playerId];
     const idx = hand.findIndex(c => c.rank === played.rank && c.suit === played.suit);
     if (idx >= 0) hand.splice(idx, 1);
   });
 
   // Add to pile
   state.pile.push(...cards);
-  state.pileHistory.push({ peerId, claimedRank, cards });
-  state.lastPlayerId = peerId;
+  state.pileHistory.push({ playerId, claimedRank, cards });
+  state.lastPlayerId = playerId;
 
   // Advance turn; current rank becomes whatever was claimed
   state.currentTurnIndex = (state.currentTurnIndex + 1) % state.players.length;
   state.currentRank = claimedRank;
 
-  const playerName = state.players.find(p => p.id === peerId)?.name || peerId;
+  const playerName = state.players.find(p => p.id === playerId)?.name || playerId;
   const logMsg = `${playerName} played ${cards.length} card(s) as ${claimedRank}`;
 
   // Check if someone emptied their hand
@@ -409,6 +463,8 @@ function hostHandlePlay({ peerId, cards, claimedRank }) {
   });
   if (hostUpdateMsg) applyGameUpdate(hostUpdateMsg);
 
+  saveSession();
+
   // Start 10-second cheat window if someone emptied their hand
   if (potentialWinner) {
     hostStartWinCountdown(potentialWinner.id);
@@ -418,13 +474,13 @@ function hostHandlePlay({ peerId, cards, claimedRank }) {
 let winTimer = null;
 let winTickTimer = null;
 
-function hostStartWinCountdown(winnerPeerId) {
-  state.pendingWinner = winnerPeerId;
+function hostStartWinCountdown(winnerPlayerId) {
+  state.pendingWinner = winnerPlayerId;
   let remaining = 10;
 
   const tick = () => {
     // Broadcast countdown to all players
-    const msg = { type: 'win-countdown', seconds: remaining, winnerId: winnerPeerId };
+    const msg = { type: 'win-countdown', seconds: remaining, winnerId: winnerPlayerId };
     Object.values(state.connections).forEach(({ conn }) => conn.send(msg));
     applyWinCountdown(msg);
   };
@@ -435,7 +491,7 @@ function hostStartWinCountdown(winnerPeerId) {
     if (remaining <= 0) {
       clearInterval(winTickTimer);
       winTickTimer = null;
-      hostConfirmWin(winnerPeerId);
+      hostConfirmWin(winnerPlayerId);
     } else {
       tick();
     }
@@ -451,11 +507,11 @@ function hostCancelWinCountdown() {
   applyWinCancelled();
 }
 
-function hostConfirmWin(winnerPeerId) {
+function hostConfirmWin(winnerPlayerId) {
   state.pendingWinner = null;
-  const msg = { type: 'game-over', winnerId: winnerPeerId };
+  const msg = { type: 'game-over', winnerId: winnerPlayerId };
   Object.values(state.connections).forEach(({ conn }) => conn.send(msg));
-  endGame(winnerPeerId);
+  endGame(winnerPlayerId);
 }
 
 function applyWinCountdown(msg) {
@@ -471,7 +527,7 @@ function applyWinCancelled() {
   document.getElementById('btn-cheat').textContent = 'Call Cheat!';
 }
 
-function hostHandleCheat({ callerPeerId }) {
+function hostHandleCheat({ callerPlayerId }) {
   if (state.pileHistory.length === 0) return;
 
   // Cancel pending win countdown if active
@@ -482,17 +538,17 @@ function hostHandleCheat({ callerPeerId }) {
   const lastPlay = state.pileHistory[state.pileHistory.length - 1];
   const wasCheating = lastPlay.cards.some(c => c.rank !== lastPlay.claimedRank);
 
-  const callerName = state.players.find(p => p.id === callerPeerId)?.name || callerPeerId;
-  const accusedName = state.players.find(p => p.id === lastPlay.peerId)?.name || lastPlay.peerId;
+  const callerName = state.players.find(p => p.id === callerPlayerId)?.name || callerPlayerId;
+  const accusedName = state.players.find(p => p.id === lastPlay.playerId)?.name || lastPlay.playerId;
 
-  let loserPeerId;
+  let loserPlayerId;
   let resultMsg;
 
   if (wasCheating) {
-    loserPeerId = lastPlay.peerId;
+    loserPlayerId = lastPlay.playerId;
     resultMsg = `${accusedName} WAS cheating! ${accusedName} takes the pile.`;
   } else {
-    loserPeerId = callerPeerId;
+    loserPlayerId = callerPlayerId;
     resultMsg = `${accusedName} was honest! ${callerName} takes the pile.`;
   }
 
@@ -501,13 +557,13 @@ function hostHandleCheat({ callerPeerId }) {
   const revealMsg = `Cards revealed: ${revealed} (claimed: ${lastPlay.claimedRank})`;
 
   // Give pile to loser
-  state.hands[loserPeerId].push(...state.pile);
+  state.hands[loserPlayerId].push(...state.pile);
   state.pile = [];
   state.pileHistory = [];
   state.lastPlayerId = null;
 
-  // If caught cheating, caller plays next; if wrong call, the caller (loser) plays next
-  const nextPlayerId = wasCheating ? callerPeerId : loserPeerId;
+  // If caught cheating, caller plays next; if wrong call, the accused (honest player) plays next
+  const nextPlayerId = wasCheating ? callerPlayerId : lastPlay.playerId;
   state.currentTurnIndex = state.players.findIndex(p => p.id === nextPlayerId);
 
   // After a cheat call, next player can claim any rank
@@ -531,6 +587,8 @@ function hostHandleCheat({ callerPeerId }) {
     else sendToPlayer(p.id, msg);
   });
   if (hostCheatMsg) applyCheatResult(hostCheatMsg);
+
+  saveSession();
 }
 
 // ─────────────────────────────────────────────
@@ -560,6 +618,7 @@ function applyGameStart(msg) {
   showScreen('screen-game');
   renderHand();
   renderHeader();
+  saveSession();
 }
 
 function applyGameUpdate(msg) {
@@ -579,6 +638,7 @@ function applyGameUpdate(msg) {
   }
   renderHand();
   renderHeader();
+  saveSession();
 }
 
 function applyCheatResult(msg) {
@@ -600,14 +660,16 @@ function applyCheatResult(msg) {
   showToast(msg.resultMsg, 4000);
   renderHand();
   renderHeader();
+  saveSession();
 }
 
-function endGame(winnerPeerId) {
-  const winner = state.players.find(p => p.id === winnerPeerId);
-  const isMe = winnerPeerId === state.myId;
+function endGame(winnerPlayerId) {
+  const winner = state.players.find(p => p.id === winnerPlayerId);
+  const isMe = winnerPlayerId === state.myId;
   document.getElementById('end-title').textContent = isMe ? '🎉 You Win!' : 'Game Over';
   document.getElementById('end-message').textContent =
     isMe ? 'You got rid of all your cards!' : `${winner?.name || 'Someone'} won the game!`;
+  clearSession();
   setTimeout(() => showScreen('screen-end'), 1500);
 }
 
@@ -630,17 +692,37 @@ function createPeer(id) {
   });
 }
 
+// Cleanly destroy peer on page unload so PeerJS server releases the ID immediately
+window.addEventListener('beforeunload', () => {
+  if (peer) { peer.destroy(); peer = null; }
+});
+
+// Host reconnect: retry the SAME id with backoff until the PeerJS server releases it
+function createPeerWithRetry(id, retries = 15, delay = 2000) {
+  return new Promise((resolve, reject) => {
+    const attempt = (n) => {
+      const p = new Peer(id);
+      p.on('open', peerId => resolve({ p, peerId }));
+      p.on('error', err => {
+        p.destroy();
+        if (err.type === 'unavailable-id' && n > 0) {
+          setTimeout(() => attempt(n - 1), delay);
+        } else {
+          reject(err);
+        }
+      });
+    };
+    attempt(retries);
+  });
+}
+
 function setupHostHandlers() {
   peer.on('connection', conn => {
-    conn.on('open', () => {
-      // Temporarily hold connection until we get their name
-    });
-
     conn.on('data', msg => {
       if (msg.type === 'join') {
-        const { name, peerId } = msg;
-        state.connections[peerId] = { conn, name };
-        state.players.push({ id: peerId, name });
+        const { name, playerId } = msg;
+        state.connections[playerId] = { conn, name };
+        state.players.push({ id: playerId, name });
 
         // Ack back to new player with current player list
         conn.send({ type: 'join-ack', players: state.players });
@@ -650,24 +732,63 @@ function setupHostHandlers() {
 
         // Update host's own waiting room
         renderPlayerList();
+        saveSession();
+
+      } else if (msg.type === 'reconnect') {
+        const { playerId } = msg;
+        const player = state.players.find(p => p.id === playerId);
+        if (player && state.started) {
+          // Update connection for this player
+          state.connections[playerId] = { conn, name: player.name };
+
+          // Send full game state for reconnecting player
+          conn.send({
+            type: 'reconnect-ack',
+            players: state.players,
+            hand: state.hands[playerId],
+            currentTurnIndex: state.currentTurnIndex,
+            currentRank: state.currentRank,
+            pileSize: state.pile.length,
+            lastPlayerId: state.lastPlayerId,
+            handSizes: Object.fromEntries(state.players.map(p => [p.id, state.hands[p.id].length])),
+          });
+
+          const playerName = player.name;
+          log(`${playerName} reconnected.`);
+          showToast(`${playerName} reconnected`);
+
+          // Notify other players
+          broadcast({ type: 'player-reconnected', playerName });
+        } else {
+          conn.send({ type: 'reconnect-fail' });
+        }
 
       } else if (msg.type === 'play') {
         hostHandlePlay(msg);
 
       } else if (msg.type === 'call-cheat') {
-        hostHandleCheat({ callerPeerId: msg.peerId });
+        hostHandleCheat({ callerPlayerId: msg.playerId });
       }
     });
 
     conn.on('close', () => {
       const entry = Object.entries(state.connections).find(([, v]) => v.conn === conn);
       if (entry) {
-        const [peerId] = entry;
-        delete state.connections[peerId];
-        state.players = state.players.filter(p => p.id !== peerId);
+        const [playerId] = entry;
+        delete state.connections[playerId];
         if (!state.started) {
+          // In lobby: remove player
+          state.players = state.players.filter(p => p.id !== playerId);
           broadcast({ type: 'player-joined', players: state.players });
           renderPlayerList();
+        } else {
+          // In game: mark as disconnected, don't remove
+          const player = state.players.find(p => p.id === playerId);
+          if (player) {
+            log(`${player.name} disconnected.`);
+            showToast(`${player.name} disconnected`);
+            broadcast({ type: 'player-disconnected', playerName: player.name });
+          }
         }
       }
     });
@@ -697,12 +818,211 @@ function setupGuestHandlers(conn) {
 
     } else if (msg.type === 'game-over') {
       endGame(msg.winnerId);
+
+    } else if (msg.type === 'reconnect-ack') {
+      // Restore game state after reconnection
+      applyReconnectState(msg);
+
+    } else if (msg.type === 'reconnect-fail') {
+      showToast('Failed to reconnect — game may have ended.');
+      clearSession();
+      showScreen('screen-lobby');
+
+    } else if (msg.type === 'player-reconnected') {
+      log(`${msg.playerName} reconnected.`);
+      showToast(`${msg.playerName} reconnected`);
+
+    } else if (msg.type === 'player-disconnected') {
+      log(`${msg.playerName} disconnected.`);
+      showToast(`${msg.playerName} disconnected`);
     }
   });
 
   conn.on('close', () => {
-    showToast('Connection to host lost.', 5000);
+    if (state.started) {
+      showToast('Connection to host lost. Reconnecting...', 5000);
+      attemptGuestReconnect();
+    } else {
+      showToast('Connection to host lost.', 5000);
+    }
   });
+}
+
+function applyReconnectState(msg) {
+  state.players = msg.players;
+  state.hands[state.myId] = msg.hand;
+  if (msg.handSizes) state.handSizes = msg.handSizes;
+  if ('lastPlayerId' in msg) state.lastPlayerId = msg.lastPlayerId;
+  state.currentTurnIndex = msg.currentTurnIndex;
+  state.currentRank = msg.currentRank;
+  if (!state.isHost) state.pile = new Array(msg.pileSize);
+  state.selectedCards = [];
+  state.chosenRank = null;
+  state.started = true;
+
+  document.getElementById('btn-cheat').textContent = 'Call Cheat!';
+  document.getElementById('game-log').innerHTML = '';
+  log('Reconnected to game.');
+  showScreen('screen-game');
+  renderHand();
+  renderHeader();
+  saveSession();
+}
+
+// ─────────────────────────────────────────────
+//  RECONNECTION
+// ─────────────────────────────────────────────
+function attemptGuestReconnect() {
+  const session = loadSession();
+  if (!session || !session.started) return;
+
+  let attempts = 0;
+  const maxAttempts = 10;
+  const baseDelay = 1500;
+
+  function tryConnect() {
+    attempts++;
+    if (attempts > maxAttempts) {
+      showToast('Could not reconnect to host.', 5000);
+      clearSession();
+      showScreen('screen-lobby');
+      return;
+    }
+
+    try {
+      const conn = peer.connect(session.roomCode, { reliable: true });
+      hostConn = conn;
+
+      const timeout = setTimeout(() => {
+        conn.close();
+        const delay = baseDelay * Math.min(attempts, 4);
+        setTimeout(tryConnect, delay);
+      }, 5000);
+
+      conn.on('open', () => {
+        clearTimeout(timeout);
+        conn.send({ type: 'reconnect', playerId: session.playerId });
+        setupGuestHandlers(conn);
+      });
+
+      conn.on('error', () => {
+        clearTimeout(timeout);
+        const delay = baseDelay * Math.min(attempts, 4);
+        setTimeout(tryConnect, delay);
+      });
+    } catch {
+      const delay = baseDelay * Math.min(attempts, 4);
+      setTimeout(tryConnect, delay);
+    }
+  }
+
+  tryConnect();
+}
+
+async function reconnectAsHost(session) {
+  state.myId = session.playerId;
+  state.myName = session.name;
+  state.roomCode = session.roomCode;
+  state.isHost = true;
+
+  const hostState = loadHostState();
+  const wasInGame = session.started && hostState;
+
+  showToast('Reconnecting as host...', 5000);
+
+  try {
+    const { p, peerId } = await createPeerWithRetry(session.roomCode);
+    peer = p;
+    state.myPeerId = peerId;
+
+    setupHostHandlers();
+
+    if (wasInGame) {
+      // Restore full game state
+      state.players = hostState.players;
+      state.hands = hostState.hands;
+      state.pile = hostState.pile;
+      state.pileHistory = hostState.pileHistory;
+      state.currentTurnIndex = hostState.currentTurnIndex;
+      state.currentRank = hostState.currentRank;
+      state.lastPlayerId = hostState.lastPlayerId;
+      state.started = true;
+      state.connections = {};
+
+      // Show game screen with restored state
+      document.getElementById('btn-cheat').textContent = 'Call Cheat!';
+      document.getElementById('game-log').innerHTML = '';
+      log('Reconnected. Waiting for other players...');
+      showScreen('screen-game');
+      renderHand();
+      renderHeader();
+      showToast('Reconnected! Waiting for players to rejoin...', 4000);
+    } else {
+      // Restore waiting room
+      state.players = [{ id: session.playerId, name: session.name }];
+      state.connections = {};
+      const displayCode = peerId.startsWith('cheat-') ? peerId.slice(6) : peerId;
+      document.getElementById('room-code-display').textContent = displayCode;
+      renderPlayerList();
+      showScreen('screen-waiting');
+      showToast('Room restored!', 3000);
+    }
+  } catch (e) {
+    showToast('Failed to reconnect: ' + (e.message || e.type), 5000);
+    clearSession();
+    showScreen('screen-lobby');
+  }
+}
+
+async function reconnectAsGuest(session) {
+  state.myId = session.playerId;
+  state.myName = session.name;
+  state.roomCode = session.roomCode;
+  state.isHost = false;
+  state.started = session.started;
+
+  showToast('Reconnecting...', 5000);
+
+  try {
+    const { p, peerId } = await createPeer('guest-' + makeRoomCode());
+    peer = p;
+    state.myPeerId = peerId;
+
+    // Catch peer-level errors
+    peer.on('error', err => {
+      if (err.type === 'peer-unavailable') {
+        showToast('Host not found. They may have left.');
+        clearSession();
+        showScreen('screen-lobby');
+      }
+    });
+
+    const conn = peer.connect(session.roomCode, { reliable: true });
+    hostConn = conn;
+
+    const connTimeout = setTimeout(() => {
+      showToast('Could not reconnect to host.');
+      clearSession();
+      showScreen('screen-lobby');
+    }, 10000);
+
+    conn.on('open', () => {
+      clearTimeout(connTimeout);
+      conn.send({ type: 'reconnect', playerId: session.playerId });
+      setupGuestHandlers(conn);
+    });
+
+    conn.on('error', () => {
+      clearTimeout(connTimeout);
+      showToast('Reconnection failed.');
+      clearSession();
+      showScreen('screen-lobby');
+    });
+  } catch (e) {
+    showToast('Failed to reconnect: ' + (e.message || e.type), 5000);
+    clearSession();
+    showScreen('screen-lobby');
+  }
 }
 
 // ─────────────────────────────────────────────
@@ -719,7 +1039,7 @@ function playCards() {
 
   const msg = {
     type: 'play',
-    peerId: state.myId,
+    playerId: state.myId,
     cards: state.selectedCards,
     claimedRank: rank,
   };
@@ -734,10 +1054,10 @@ function playCards() {
 function callCheat() {
   if (state.pile.length === 0) return;
 
-  const msg = { type: 'call-cheat', peerId: state.myId };
+  const msg = { type: 'call-cheat', playerId: state.myId };
 
   if (state.isHost) {
-    hostHandleCheat({ callerPeerId: state.myId });
+    hostHandleCheat({ callerPlayerId: state.myId });
   } else {
     sendToHost(msg);
   }
@@ -750,24 +1070,27 @@ document.getElementById('btn-create').addEventListener('click', async () => {
   const name = document.getElementById('input-name').value.trim();
   if (!name) { showToast('Enter your name first'); return; }
 
+  const playerId = generatePlayerId();
   state.myName = name;
+  state.myId = playerId;
   state.isHost = true;
 
   try {
     const shortCode = makeRoomCode();
     const { p, peerId } = await createPeer('cheat-' + shortCode);
     peer = p;
-    state.myId = peerId;
+    state.myPeerId = peerId;
     state.roomCode = peerId;
     // Display only the short code portion (after 'cheat-')
     const displayCode = peerId.startsWith('cheat-') ? peerId.slice(6) : peerId;
-    state.players = [{ id: peerId, name }];
+    state.players = [{ id: playerId, name }];
 
     setupHostHandlers();
 
     document.getElementById('room-code-display').textContent = displayCode;
     renderPlayerList();
     showScreen('screen-waiting');
+    saveSession();
   } catch (e) {
     showToast('Failed to create room: ' + e.message);
   }
@@ -781,14 +1104,16 @@ document.getElementById('btn-join').addEventListener('click', async () => {
 
   // Accept full peer IDs (UUID) or short 5-char codes (prepend 'cheat-')
   const fullRoomId = roomCode.includes('-') ? roomCode : 'cheat-' + roomCode.toUpperCase();
+  const playerId = generatePlayerId();
   state.myName = name;
+  state.myId = playerId;
   state.isHost = false;
   state.roomCode = fullRoomId;
 
   try {
     const { p, peerId } = await createPeer('guest-' + makeRoomCode());
     peer = p;
-    state.myId = peerId;
+    state.myPeerId = peerId;
 
     // Catch peer-level errors (e.g. peer-unavailable) that fire after open
     peer.on('error', err => {
@@ -811,12 +1136,13 @@ document.getElementById('btn-join').addEventListener('click', async () => {
 
     conn.on('open', () => {
       clearTimeout(connTimeout);
-      conn.send({ type: 'join', name, peerId });
+      conn.send({ type: 'join', name, playerId });
       setupGuestHandlers(conn);
 
       document.getElementById('room-code-display').textContent = roomCode;
       renderPlayerList();
       showScreen('screen-waiting');
+      saveSession();
     });
 
     conn.on('error', e => showToast('Connection error: ' + e.message));
@@ -827,7 +1153,8 @@ document.getElementById('btn-join').addEventListener('click', async () => {
 });
 
 document.getElementById('btn-copy').addEventListener('click', () => {
-  navigator.clipboard.writeText(state.roomCode)
+  const displayCode = state.roomCode.startsWith('cheat-') ? state.roomCode.slice(6) : state.roomCode;
+  navigator.clipboard.writeText(displayCode)
     .then(() => showToast('Room code copied!'))
     .catch(() => showToast('Copy failed — share the code manually'));
 });
@@ -844,8 +1171,9 @@ document.getElementById('btn-restart').addEventListener('click', () => {
   // Reset state and go back to lobby
   if (peer) { peer.destroy(); peer = null; }
   hostConn = null;
+  clearSession();
   Object.assign(state, {
-    isHost: false, myId: null, myName: '', roomCode: '',
+    isHost: false, myId: null, myPeerId: null, myName: '', roomCode: '',
     connections: {}, players: [], started: false,
     hands: {}, pile: [], pileHistory: [],
     currentTurnIndex: 0, currentRank: '7', selectedCards: [], chosenRank: null,
@@ -854,3 +1182,18 @@ document.getElementById('btn-restart').addEventListener('click', () => {
   document.getElementById('input-room').value = '';
   showScreen('screen-lobby');
 });
+
+// ─────────────────────────────────────────────
+//  SESSION RESTORE ON PAGE LOAD
+// ─────────────────────────────────────────────
+(function checkSession() {
+  const session = loadSession();
+  if (!session || !session.playerId) return;
+
+  // Only reconnect if we were in a game or waiting room
+  if (session.isHost) {
+    reconnectAsHost(session);
+  } else {
+    reconnectAsGuest(session);
+  }
+})();
