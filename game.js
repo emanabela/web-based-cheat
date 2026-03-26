@@ -346,12 +346,44 @@ function renderPlayerList() {
   list.innerHTML = '';
   state.players.forEach(p => {
     const li = document.createElement('li');
-    li.textContent = p.name;
+    const nameSpan = document.createElement('span');
+    nameSpan.textContent = p.name;
+    li.appendChild(nameSpan);
     if (state.isHost && p.id === state.myId) li.classList.add('host');
+    if (state.isHost && !state.started && p.id !== state.myId) {
+      const kickBtn = document.createElement('button');
+      kickBtn.className = 'btn-kick';
+      kickBtn.textContent = 'Kick';
+      kickBtn.addEventListener('click', () => kickPlayer(p.id));
+      li.appendChild(kickBtn);
+    }
     list.appendChild(li);
   });
   document.getElementById('player-count').textContent = state.players.length;
   document.getElementById('btn-start').disabled = state.players.length < 2;
+}
+
+function kickPlayer(playerId) {
+  if (!state.isHost || state.started) return;
+  const player = state.players.find(p => p.id === playerId);
+  if (!player) return;
+
+  // Notify the kicked player
+  sendToPlayer(playerId, { type: 'kicked' });
+
+  // Close connection
+  if (state.connections[playerId]) {
+    state.connections[playerId].conn.close();
+    delete state.connections[playerId];
+  }
+
+  // Remove from player list
+  state.players = state.players.filter(p => p.id !== playerId);
+
+  // Notify remaining players
+  broadcast({ type: 'player-joined', players: state.players });
+  renderPlayerList();
+  showToast(`${player.name} was kicked`);
 }
 
 // ─────────────────────────────────────────────
@@ -574,6 +606,7 @@ function hostHandleCheat({ callerPlayerId }) {
   state.players.forEach(p => {
     const msg = {
       type: 'cheat-result',
+      callerName,
       resultMsg,
       revealMsg,
       currentTurnIndex: state.currentTurnIndex,
@@ -655,6 +688,7 @@ function applyCheatResult(msg) {
   state.winCountdown = 0;
   document.getElementById('btn-cheat').textContent = 'Call Cheat!';
 
+  log(`${msg.callerName} called cheat!`);
   log(msg.revealMsg);
   log(msg.resultMsg, true);
   showToast(msg.resultMsg, 4000);
@@ -835,6 +869,13 @@ function setupGuestHandlers(conn) {
     } else if (msg.type === 'player-disconnected') {
       log(`${msg.playerName} disconnected.`);
       showToast(`${msg.playerName} disconnected`);
+
+    } else if (msg.type === 'kicked') {
+      hostConn?.close();
+      hostConn = null;
+      clearSession();
+      showToast('You were kicked from the lobby.', 4000);
+      showScreen('screen-lobby');
     }
   });
 

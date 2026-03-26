@@ -175,6 +175,18 @@ button:disabled { background: #333; cursor: not-allowed; color: #666; }
 }
 #player-list li::before { content: '●'; color: #4caf50; font-size: 0.6rem; }
 #player-list li.host::after { content: ' 👑'; margin-left: auto; }
+.btn-kick {
+  margin-left: auto;
+  padding: 0.15rem 0.5rem;
+  font-size: 0.75rem;
+  background: rgba(244,67,54,0.25);
+  color: #ff6b6b;
+  border: 1px solid rgba(244,67,54,0.4);
+  border-radius: 4px;
+  cursor: pointer;
+  transition: background 0.2s;
+}
+.btn-kick:hover { background: rgba(244,67,54,0.45); }
 
 /* End screen */
 .end-suits { font-size: 1.5rem; color: var(--gold); margin-bottom: 0.75rem; letter-spacing: 0.3em; }
